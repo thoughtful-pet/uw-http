@@ -4,7 +4,7 @@
 
 #include <uw_c.h>
 
-#include "http.h"
+#include "uw_http.h"
 
 static char* get_response_header(CURL* easy_handle, char* name)
 /*

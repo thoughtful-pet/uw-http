@@ -2,7 +2,7 @@
 
 #include <uw_c.h>
 
-#include "http.h"
+#include "uw_http.h"
 
 // probably should be session properties:
 static bool debug = false;
