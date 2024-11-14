@@ -64,6 +64,7 @@ void delete_http_session(void* session);
 void http_request_set_url(UwValuePtr request, UwValuePtr url);
 void http_request_set_proxy(UwValuePtr request, UwValuePtr proxy);
 void http_request_set_cookie(UwValuePtr request, UwValuePtr cookie);
+void http_request_set_resume(UwValuePtr request, size_t pos);
 
 void http_update_status(UwValuePtr request);
 

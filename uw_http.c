@@ -198,6 +198,17 @@ void http_request_set_cookie(UwValuePtr request, UwValuePtr cookie)
     curl_easy_setopt(req->easy_handle, CURLOPT_COOKIE, cookie_cstr);
 }
 
+void http_request_set_resume(UwValuePtr request, size_t pos)
+{
+    if (pos == 0) {
+        return;
+    }
+
+    HttpRequestData* req = _uw_get_data_ptr(request, UwTypeId_HttpRequest, HttpRequestData*);
+
+    curl_easy_setopt(req->easy_handle, CURLOPT_RESUME_FROM_LARGE, (curl_off_t) pos);
+}
+
 void http_update_status(UwValuePtr request)
 {
     HttpRequestData* req = _uw_get_data_ptr(request, UwTypeId_HttpRequest, HttpRequestData*);
