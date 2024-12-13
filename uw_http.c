@@ -1,6 +1,4 @@
-#include <stdio.h>
-
-#include <uw_c.h>
+#include <uw.h>
 
 #include "uw_http.h"
 
@@ -34,17 +32,17 @@ static void fini_http_request(UwValuePtr self)
  * Basic UW interface method
  */
 {
-    HttpRequestData* req = _uw_get_data_ptr(self, UwTypeId_HttpRequest, HttpRequestData*);
+    HttpRequestData* req = (HttpRequestData*) self->extra_data;
 
-    uw_delete(&req->url);
-    uw_delete(&req->proxy);
-    uw_delete(&req->real_url);
-    uw_delete(&req->media_type);
-    uw_delete(&req->media_subtype);
-    uw_delete(&req->media_type_params);
-    uw_delete(&req->disposition_type);
-    uw_delete(&req->disposition_params);
-    uw_delete(&req->content);
+    uw_destroy(&req->url);
+    uw_destroy(&req->proxy);
+    uw_destroy(&req->real_url);
+    uw_destroy(&req->media_type);
+    uw_destroy(&req->media_subtype);
+    uw_destroy(&req->media_type_params);
+    uw_destroy(&req->disposition_type);
+    uw_destroy(&req->disposition_params);
+    uw_destroy(&req->content);
 
     if (req->headers) {
         curl_slist_free_all(req->headers);
@@ -57,33 +55,33 @@ static void fini_http_request(UwValuePtr self)
     }
 }
 
-static bool init_http_request(UwValuePtr self)
+static UwResult init_http_request(UwValuePtr self, va_list ap)
 /*
  * Basic UW interface method
  * Initialize request structure and create CURL easy handle
  */
 {
-    HttpRequestData* req = _uw_get_data_ptr(self, UwTypeId_HttpRequest, HttpRequestData*);
+    HttpRequestData* req = (HttpRequestData*) self->extra_data;
 
-    req->url     = uw_create("");
-    req->proxy   = uw_create("");
-    req->media_type    = uw_create("");
-    req->media_subtype = uw_create("");
-    req->media_type_params = uw_create_map();
+    req->url     = UwString();
+    req->proxy   = UwString();
+    req->media_type    = UwString();
+    req->media_subtype = UwString();
+    req->media_type_params = UwMap();
     //req->content_encoding_is_utf8 = false;
     req->status  = 0;
-    req->real_url = uw_makeref(req->url);
+    req->real_url = uw_clone(&req->url);
 
     req->easy_handle = curl_easy_init();
     if (!req->easy_handle) {
         fprintf(stderr, "Cannot make CURL handle\n");
         fini_http_request(self);
-        return false;
+        return UwOOM();  // XXX
     }
-
-    // set self as private data for easy_handle -- mind makeref!
-    // kinda cyclic reference, but there's nothing wrong with this
-    curl_easy_setopt(req->easy_handle, CURLOPT_PRIVATE, uw_makeref(self));
+    // set self as private data for easy_handle
+    UwValuePtr self_ptr = _uw_default_allocator.alloc(sizeof(_UwValue));
+    *self_ptr = uw_clone(self);
+    curl_easy_setopt(req->easy_handle, CURLOPT_PRIVATE, self_ptr);
 
     // make headers
     for (size_t i = 0; i < sizeof(_http_headers)/sizeof(_http_headers[0]); i++) {
@@ -91,7 +89,7 @@ static bool init_http_request(UwValuePtr self)
         if (!temp) {
             fprintf(stderr, "Cannot make headers\n");
             fini_http_request(self);
-            return false;
+            return UwOOM();
         }
         req->headers = temp;
     }
@@ -101,7 +99,7 @@ static bool init_http_request(UwValuePtr self)
     curl_easy_setopt(req->easy_handle, CURLOPT_ACCEPT_ENCODING, "gzip, deflate, br, zstd");
     curl_easy_setopt(req->easy_handle, CURLOPT_CAINFO, "/etc/ssl/certs/ca-certificates.crt");
 
-    curl_easy_setopt(req->easy_handle, CURLOPT_TIMEOUT, 600L);
+    curl_easy_setopt(req->easy_handle, CURLOPT_TIMEOUT, 1200L);
     curl_easy_setopt(req->easy_handle, CURLOPT_CONNECTTIMEOUT, 60L);
     curl_easy_setopt(req->easy_handle, CURLOPT_EXPECT_100_TIMEOUT_MS, 0L);
 
@@ -118,7 +116,7 @@ static bool init_http_request(UwValuePtr self)
     UwInterface_Curl* iface = uw_get_interface(self, Curl);
 
     curl_easy_setopt(req->easy_handle, CURLOPT_WRITEFUNCTION, iface->write_data);
-    curl_easy_setopt(req->easy_handle, CURLOPT_WRITEDATA, self);
+    curl_easy_setopt(req->easy_handle, CURLOPT_WRITEDATA, self_ptr);
 
     // python leftovers to do someday:
     //
@@ -127,14 +125,14 @@ static bool init_http_request(UwValuePtr self)
     //         post_data = urlencode(form_data)
     //     c.setopt(c.POSTFIELDS, post_data)
 
-    return true;
+    return UwOK();
 }
 
 static size_t request_write_data(void* data, size_t always_1, size_t size, UwValuePtr self)
 {
-    HttpRequestData* req = _uw_get_data_ptr(self, UwTypeId_HttpRequest, HttpRequestData*);
+    HttpRequestData* req = (HttpRequestData*) self->extra_data;
 
-    if (!req->content) {
+    if (uw_is_null(&req->content)) {
         http_request_parse_headers(req);
 
         curl_off_t content_length;
@@ -143,11 +141,14 @@ static size_t request_write_data(void* data, size_t always_1, size_t size, UwVal
             content_length = 0;
         }
         req->content = uw_create_empty_string(content_length, 1);
+        if (uw_error(&req->content)) {
+            return 0;
+        }
     }
     if (!size) {
         return 0;
     }
-    if (!uw_string_append_buffer(req->content, (uint8_t*) data, size)) {
+    if (!uw_string_append_buffer(&req->content, (uint8_t*) data, size)) {
         return 0;
     }
     return size;
@@ -155,21 +156,21 @@ static size_t request_write_data(void* data, size_t always_1, size_t size, UwVal
 
 static void request_complete(UwValuePtr self)
 {
-    HttpRequestData* req = _uw_get_data_ptr(self, UwTypeId_HttpRequest, HttpRequestData*);
+    HttpRequestData* req = (HttpRequestData*) self->extra_data;
 
-    if (!req->content) {
+    if (uw_is_null(&req->content)) {
         http_request_parse_headers(req);
     }
 }
 
 void http_request_set_url(UwValuePtr request, UwValuePtr url)
 {
-    HttpRequestData* req = _uw_get_data_ptr(request, UwTypeId_HttpRequest, HttpRequestData*);
+    HttpRequestData* req = (HttpRequestData*) request->extra_data;
 
     UW_CSTRING_LOCAL(url_cstr, url);
     curl_easy_setopt(req->easy_handle, CURLOPT_URL, url_cstr);
-    uw_delete(&req->url);
-    req->url = uw_makeref(url);
+    uw_destroy(&req->url);
+    req->url = uw_clone(url);
 }
 
 void http_request_set_proxy(UwValuePtr request, UwValuePtr proxy)
@@ -178,12 +179,12 @@ void http_request_set_proxy(UwValuePtr request, UwValuePtr proxy)
         return;
     }
 
-    HttpRequestData* req = _uw_get_data_ptr(request, UwTypeId_HttpRequest, HttpRequestData*);
+    HttpRequestData* req = (HttpRequestData*) request->extra_data;
 
     UW_CSTRING_LOCAL(proxy_cstr, proxy);
     curl_easy_setopt(req->easy_handle, CURLOPT_PROXY, proxy_cstr);
-    uw_delete(&req->proxy);
-    req->proxy = uw_makeref(proxy);
+    uw_destroy(&req->proxy);
+    req->proxy = uw_clone(proxy);
 }
 
 void http_request_set_cookie(UwValuePtr request, UwValuePtr cookie)
@@ -192,7 +193,7 @@ void http_request_set_cookie(UwValuePtr request, UwValuePtr cookie)
         return;
     }
 
-    HttpRequestData* req = _uw_get_data_ptr(request, UwTypeId_HttpRequest, HttpRequestData*);
+    HttpRequestData* req = (HttpRequestData*) request->extra_data;
 
     UW_CSTRING_LOCAL(cookie_cstr, cookie);
     curl_easy_setopt(req->easy_handle, CURLOPT_COOKIE, cookie_cstr);
@@ -204,14 +205,14 @@ void http_request_set_resume(UwValuePtr request, size_t pos)
         return;
     }
 
-    HttpRequestData* req = _uw_get_data_ptr(request, UwTypeId_HttpRequest, HttpRequestData*);
+    HttpRequestData* req = (HttpRequestData*) request->extra_data;
 
     curl_easy_setopt(req->easy_handle, CURLOPT_RESUME_FROM_LARGE, (curl_off_t) pos);
 }
 
 void http_update_status(UwValuePtr request)
 {
-    HttpRequestData* req = _uw_get_data_ptr(request, UwTypeId_HttpRequest, HttpRequestData*);
+    HttpRequestData* req = (HttpRequestData*) request->extra_data;
 
     long status;
     CURLcode err = curl_easy_getinfo(req->easy_handle, CURLINFO_RESPONSE_CODE, &status);
@@ -297,7 +298,7 @@ void delete_http_session(void* session)
 bool add_http_request(void* session, UwValuePtr request)
 {
     CURLM* multi_handle = (CURLM*) session;
-    HttpRequestData* req = _uw_get_data_ptr(request, UwTypeId_HttpRequest, HttpRequestData*);
+    HttpRequestData* req = (HttpRequestData*) request->extra_data;
 
     CURLMcode err = curl_multi_add_handle(multi_handle, req->easy_handle);
     if (err) {
@@ -328,23 +329,23 @@ static void check_transfers(CURLM* multi_handle)
             exit(0);
         }
 
-        HttpRequestData* req = _uw_get_data_ptr(request, UwTypeId_HttpRequest, HttpRequestData*);
+        HttpRequestData* req = (HttpRequestData*) request->extra_data;
 
         if(m->data.result != CURLE_OK) {
-            UW_CSTRING_LOCAL(url_cstr, req->url);
+            UW_CSTRING_LOCAL(url_cstr, &req->url);
             fprintf(stderr, "FAILED %s: %s\n", url_cstr, curl_easy_strerror(m->data.result));
         } else {
             // get real URL
             char* url = nullptr;
             curl_easy_getinfo(req->easy_handle, CURLINFO_EFFECTIVE_URL, &url);
             if (url) {
-                uw_delete(&req->real_url);
-                req->real_url = uw_create(url);
+                uw_destroy(&req->real_url);
+                req->real_url = uw_create_string_cstr(url);
             }
             // get response status
             http_update_status(request);
             {
-                UW_CSTRING_LOCAL(url_cstr, req->url);
+                UW_CSTRING_LOCAL(url_cstr, &req->url);
                 fprintf(stderr, "STATUS %u: %s\n", req->status, url_cstr);
             }
 
@@ -352,7 +353,8 @@ static void check_transfers(CURLM* multi_handle)
             iface->complete(request);
         }
         curl_multi_remove_handle(multi_handle, req->easy_handle);
-        uw_delete(&request);
+        uw_destroy(request);
+        _uw_default_allocator.free(request, sizeof(_UwValue));
     }
 }
 

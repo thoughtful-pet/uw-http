@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include <uw_c.h>
+#include <uw.h>
 
 #include "uw_http.h"
 
@@ -95,13 +95,13 @@ static inline void skip_lwsp(char** current_char)
     *current_char = ptr;
 }
 
-static UwValuePtr parse_token(char** current_char)
+static UwResult parse_token(char** current_char)
 /*
  * https://datatracker.ietf.org/doc/html/rfc2616#section-2.2
  *
  * token = 1*<any CHAR except CTLs or separators>
  *
- * Return token as string or nullptr if out of memory
+ * Return token as string or error.
  */
 {
     char* token_start = *current_char;
@@ -111,11 +111,11 @@ static UwValuePtr parse_token(char** current_char)
         token_end++;
     }
     UwValue token = uw_create("");
-    if (token) {
+    if (uw_ok(&token)) {
         size_t token_length = token_end - token_start;
         if (token_length) {
-            if (!uw_string_append_substring_cstr(token, token_start, 0, token_length)) {
-                return nullptr;
+            if (!uw_string_append_substring_cstr(&token, token_start, 0, token_length)) {
+                return UwOOM();
             }
         }
     }
@@ -123,7 +123,7 @@ static UwValuePtr parse_token(char** current_char)
     return uw_move(&token);
 }
 
-static UwValuePtr parse_quoted_string(char** current_char)
+static UwResult parse_quoted_string(char** current_char)
 /*
  * https://datatracker.ietf.org/doc/html/rfc7230#section-3.2.6
  *
@@ -132,18 +132,15 @@ static UwValuePtr parse_quoted_string(char** current_char)
  * obs-text      = %x80-FF
  * quoted-pair   = "\" ( HTAB / SP / VCHAR / obs-text )
  *
- * Return string, null value if not a quoted string, or nullptr if out of memory.
+ * Return string, null value if not a quoted string, or OOM error.
  */
 {
     char* qstr_start = *current_char;
 
-    UwValue result = uw_create("");
-    if(!result) {
-        return nullptr;
-    }
+    UWDECL_String(result);
 
     if (*qstr_start != '"') {
-        return uw_create_null();
+        return UwNull();
     }
     qstr_start++;
 
@@ -166,8 +163,8 @@ static UwValuePtr parse_quoted_string(char** current_char)
         // append what we've got and skip quote char
         qstr_length = qstr_end - qstr_start;
         if (qstr_length) {
-            if (!uw_string_append_substring_cstr(result, qstr_start, 0, qstr_length)) {
-                return nullptr;
+            if (!uw_string_append_substring_cstr(&result, qstr_start, 0, qstr_length)) {
+                return UwOOM();
             }
         }
         qstr_end++;
@@ -175,12 +172,14 @@ static UwValuePtr parse_quoted_string(char** current_char)
     }
     if (*qstr_end != '"') {
         // strict parsing, ignore malformed string
-        uw_string_truncate(result, 0);
+        if (!uw_string_truncate(&result, 0)) {
+            return UwOOM();
+        }
     } else {
         qstr_length = qstr_end - qstr_start;
         if (qstr_length) {
-            if (!uw_string_append_substring_cstr(result, qstr_start, 0, qstr_length)) {
-                return nullptr;
+            if (!uw_string_append_substring_cstr(&result, qstr_start, 0, qstr_length)) {
+                return UwOOM();
             }
         }
         qstr_end++;  // skip closing quote
@@ -272,7 +271,7 @@ static inline unsigned char parse_value_char(char** current_char)
     return (high_nibble << 4) | c;
 }
 
-static UwValuePtr parse_ext_value(char** current_char)
+static UwResult parse_ext_value(char** current_char)
 /*
  * current_char must point to the first non-space character
  *
@@ -284,7 +283,7 @@ static UwValuePtr parse_ext_value(char** current_char)
  *
  * language            = <Language-Tag, defined in [RFC5646], Section 2.1>
  *
- * Return string, null value if not a quoted string, or nullptr if out of memory.
+ * Return string, null value if not a quoted string, or OOM error.
  */
 {
     char* charset_ptr = *current_char;
@@ -300,7 +299,7 @@ static UwValuePtr parse_ext_value(char** current_char)
     *current_char = language_ptr;
     if (*language_ptr != '\'') {
         // malformed ext-value
-        return uw_create_null();
+        return UwNull();
     };
 
     *language_ptr++ = 0;  // terminate charset part
@@ -319,28 +318,40 @@ static UwValuePtr parse_ext_value(char** current_char)
 
     if (*value_ptr != '\'') {
         // malformed ext-value
-        return uw_create_null();
+        return UwNull();
     }
     *value_ptr++ = 0;  // terminate language part
     *current_char = value_ptr;
 
     UwValue value = uw_create_empty_string(strlen(value_ptr) + 1, 1);
+    if (uw_error(&value)) {
+        return uw_move(&value);
+    }
 
     for (;;) {
         unsigned char c = parse_value_char(current_char);
         if (c == 0) {
             break;
         }
-        if (!uw_string_append_char(value, c)) {
-            return nullptr;
+        if (!uw_string_append_char(&value, c)) {
+            return UwOOM();
         }
     }
 
-    return uw_create_map_va(
-        uwc_charptr, "charset",  uwc_value_ptr,     uw_create_string_cstr(charset_ptr),
-        uwc_charptr, "language", uwc_value_ptr,     uw_create_string_cstr(language_ptr),
-        uwc_charptr, "value",    uwc_value_makeref, value,
-        -1
+    UwValue charset = uw_create_string_cstr(charset_ptr);
+    if (uw_error(&charset)) {
+        return uw_move(&charset);
+    }
+
+    UwValue language = uw_create_string_cstr(language_ptr);
+    if (uw_error(&language)) {
+        return uw_move(&language);
+    }
+
+    return UwMap(
+        UwCharPtr("charset"),  uw_move(&charset),
+        UwCharPtr("language"), uw_move(&language),
+        UwCharPtr("value"),    uw_move(&value)
     );
 }
 
@@ -358,7 +369,7 @@ static bool parse_media_type(char** current_char, HttpRequestData* req)
  */
 {
     UwValue media_type = parse_token(current_char);
-    if (!media_type) {
+    if (uw_error(&media_type)) {
         return false;
     }
     if (**current_char == 0) {
@@ -370,11 +381,11 @@ static bool parse_media_type(char** current_char, HttpRequestData* req)
     (*current_char)++;
 
     UwValue media_subtype = parse_token(current_char);
-    if (!media_subtype) {
+    if (uw_error(&media_subtype)) {
         return false;
     }
 
-    UwValue params = uw_create_map();
+    UwValue params = UwMap();
     for (;;) {
         skip_lwsp(current_char);
         if (**current_char == 0) {
@@ -399,25 +410,25 @@ static bool parse_media_type(char** current_char, HttpRequestData* req)
                 break;
             }
 
-            UwValue param_value = nullptr;
+            UwValue param_value = UwNull();
             if (**current_char == '"') {
                 param_value = parse_quoted_string(current_char);
             } else {
                 param_value = parse_token(current_char);
             }
-            if (!uw_is_string(param_value)) {
+            if (!uw_is_string(&param_value)) {
                 break;
             }
 
-            uw_string_lower(param_name);
-            if (!uw_map_update(params, param_name, param_value)) {
+            uw_string_lower(&param_name);
+            if (!uw_map_update(&params, &param_name, &param_value)) {
                 return false;
             }
         }
     }
-    uw_delete(&req->media_type);
-    uw_delete(&req->media_subtype);
-    uw_delete(&req->media_type_params);
+    uw_destroy(&req->media_type);
+    uw_destroy(&req->media_subtype);
+    uw_destroy(&req->media_type_params);
     req->media_type        = uw_move(&media_type);
     req->media_subtype     = uw_move(&media_subtype);
     req->media_type_params = uw_move(&params);
@@ -446,12 +457,12 @@ static bool parse_content_disposition(char** current_char, HttpRequestData* req)
  */
 {
     UwValue disposition_type = parse_token(current_char);
-    if (!disposition_type) {
+    if (uw_error(&disposition_type)) {
         return false;
     }
-    uw_string_lower(disposition_type);
+    uw_string_lower(&disposition_type);
 
-    UwValue params = uw_create_map();
+    UwValue params = UwMap();
     for (;;) {
         skip_lwsp(current_char);
         if (**current_char == 0) {
@@ -482,7 +493,7 @@ static bool parse_content_disposition(char** current_char, HttpRequestData* req)
                 break;
             }
 
-            UwValue param_value = nullptr;
+            UwValue param_value = UwNull();
             if (is_ext_value) {
                 param_value = parse_ext_value(current_char);
             } else if (**current_char == '"') {
@@ -490,18 +501,18 @@ static bool parse_content_disposition(char** current_char, HttpRequestData* req)
             } else {
                 param_value = parse_token(current_char);
             }
-            if (!uw_is_string(param_value)) {
+            if (!uw_is_string(&param_value)) {
                 break;
             }
 
-            uw_string_lower(param_name);
-            if (!uw_map_update(params, param_name, param_value)) {
+            uw_string_lower(&param_name);
+            if (!uw_map_update(&params, &param_name, &param_value)) {
                 return false;
             }
         }
     }
-    uw_delete(&req->disposition_type);
-    uw_delete(&req->disposition_params);
+    uw_destroy(&req->disposition_type);
+    uw_destroy(&req->disposition_params);
     req->disposition_type   = uw_move(&disposition_type);
     req->disposition_params = uw_move(&params);
     return true;
@@ -550,7 +561,7 @@ void http_request_parse_headers(HttpRequestData* req)
     http_request_parse_content_disposition(req);
 }
 
-UwValuePtr http_request_get_filename(HttpRequestData* req)
+UwResult http_request_get_filename(HttpRequestData* req)
 /*
  * Get file name from the following sources:
  *   - Content-Disposition
@@ -562,55 +573,60 @@ UwValuePtr http_request_get_filename(HttpRequestData* req)
  * If no filename found and URL ends with slash, return "index.html"
  */
 {
-    if (uw_is_map(req->disposition_params)) {
-        if (uw_is_string(req->disposition_type) && uw_equal(req->disposition_type, "attachment")) {
-            UwValue filename = uw_map_get(req->disposition_params, "filename");
-            if (filename) {
-                UwValue fname   = nullptr;
-                UwValue charset = nullptr;
-                if (uw_is_map(filename)) {
-                    fname   = uw_map_get(filename, "value");
-                    charset = uw_map_get(filename, "charset");
+    if (uw_is_map(&req->disposition_params)) {
+        if (uw_is_string(&req->disposition_type) && uw_equal(&req->disposition_type, "attachment")) {
+            UwValue filename = uw_map_get(&req->disposition_params, "filename");
+            if (uw_ok(&filename)) {
+                if (uw_is_map(&filename)) {
+                    UwValue fname = uw_map_get(&filename, "value");
+                    UwValue charset = uw_map_get(&filename, "charset");
+                    return UwMap(
+                        UwCharPtr("filename"), uw_move(&fname),
+                        UwCharPtr("charset"),  uw_move(&charset)
+                    );
                 } else {
-                    fname   = uw_move(&filename);
-                    charset = uw_create("");
+                    return UwMap(
+                        UwCharPtr("filename"), uw_move(&filename),
+                        UwCharPtr("charset"),  UwString()
+                    );
                 }
-                return uw_create_map_va(
-                    uwc_charptr, "filename", uwc_value_makeref, fname,
-                    uwc_charptr, "charset",  uwc_value_makeref, charset,
-                    -1
-                );
             }
         }
     }
 
-    UwValue parts = nullptr;
+    UwValue parts = UwNull();
 
     char* last_location = get_response_header(req->easy_handle, "Location");
     if (last_location) {
-        UwValue location = uw_create(last_location);
-        parts = uw_string_split(location, '/');
+        UwValue location = uw_create_string_cstr(last_location);
+        if (uw_error(&location)) {
+            return uw_move(&location);
+        }
+        parts = uw_string_split_chr(&location, '/');
     } else {
-        parts = uw_string_split(req->url, '/');
+        parts = uw_string_split_chr(&req->url, '/');
+    }
+    if (uw_error(&parts)) {
+        return uw_move(&parts);
     }
 
-    UwValue filename = uw_list_item(parts, -1);
-    if (uw_strlen(filename) == 0) {
-        uw_string_append(filename, "index.html");
+    UwValue filename = uw_list_item(&parts, -1);
+    if (uw_strlen(&filename) == 0) {
+        if (!uw_string_append(&filename, "index.html")) {
+            return UwOOM();
+        }
     }
-    return uw_create_map_va(
-        uwc_charptr, "filename", uwc_value_makeref, filename,
-        uwc_charptr, "charset",  uwc_value_ptr,     uw_create(""),
-        -1
+    return UwMap(
+        UwCharPtr("filename"), uw_move(&filename),
+        UwCharPtr("charset"),  UwString()
     );
 }
 
-UwValuePtr urljoin_cstr(char* base_url, char* other_url)
+UwResult urljoin_cstr(char* base_url, char* other_url)
 {
     CURLU* handle = curl_url();
     if (!handle) {
-        fprintf(stderr, "%s: out of memory\n", __func__);  // XXX print urls too?
-        exit(1);
+        return UwOOM();
     }
 
     CURLUcode rc;
@@ -619,13 +635,13 @@ UwValuePtr urljoin_cstr(char* base_url, char* other_url)
     if(rc) {
         fprintf(stderr, "%s URL error: %s\n", __func__, curl_url_strerror(rc));
         curl_url_cleanup(handle);
-        return nullptr;
+        return UwOOM();  // really?
     }
     rc = curl_url_set(handle, CURLUPART_URL, other_url, 0);
     if(rc) {
         fprintf(stderr, "%s URL error: %s\n", __func__, curl_url_strerror(rc));
         curl_url_cleanup(handle);
-        return nullptr;
+        return UwOOM();  // really?
     }
     char* url;
     rc = curl_url_get(handle, CURLUPART_URL, &url, 0);
@@ -639,7 +655,7 @@ UwValuePtr urljoin_cstr(char* base_url, char* other_url)
     return uw_move(&result);
 }
 
-UwValuePtr urljoin(UwValuePtr base_url, UwValuePtr other_url)
+UwResult urljoin(UwValuePtr base_url, UwValuePtr other_url)
 {
     UW_CSTRING_LOCAL(cstr_base_url, base_url);
     UW_CSTRING_LOCAL(cstr_other_url, other_url);

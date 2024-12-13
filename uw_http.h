@@ -1,7 +1,7 @@
 #pragma once
 
 #include <curl/curl.h>
-#include <uw_c.h>
+#include <uw.h>
 
 extern UwTypeId UwTypeId_HttpRequest;
 /*
@@ -26,30 +26,31 @@ typedef struct {
 
 
 typedef struct {
+    _UwExtraData value_data;
+
     CURL* easy_handle;
 
-    UwValuePtr url;
-    UwValuePtr proxy;
-    UwValuePtr real_url;
+    _UwValue url;
+    _UwValue proxy;
+    _UwValue real_url;
 
     // Parsed headers, call http_request_parse_headers for that.
     // Can be nullptr!
-    UwValuePtr media_type;
-    UwValuePtr media_subtype;
-    UwValuePtr media_type_params;  // map
-    UwValuePtr disposition_type;
-    UwValuePtr disposition_params; // values can be strings of maps containing charset, language, and value
+    _UwValue media_type;
+    _UwValue media_subtype;
+    _UwValue media_type_params;  // map
+    _UwValue disposition_type;
+    _UwValue disposition_params; // values can be strings of maps containing charset, language, and value
 
     // The content received by default handlers.
     // Always binary, regardless of content-type charset
-    UwValuePtr content;
+    _UwValue content;
 
     struct curl_slist* headers;
 
     unsigned int status;
 
 } HttpRequestData;
-
 
 // global initialization
 void init_http();
@@ -72,11 +73,11 @@ void http_update_status(UwValuePtr request);
 bool http_perform(void* session, int* running_transfers);
 
 // utils
-UwValuePtr urljoin_cstr(char* base_url, char* other_url);
-UwValuePtr urljoin(UwValuePtr base_url, UwValuePtr other_url);
+UwResult urljoin_cstr(char* base_url, char* other_url);
+UwResult urljoin(UwValuePtr base_url, UwValuePtr other_url);
 
 void http_request_parse_content_type(HttpRequestData* req);
 void http_request_parse_content_disposition(HttpRequestData* req);
 void http_request_parse_headers(HttpRequestData* req);
 
-UwValuePtr http_request_get_filename(HttpRequestData* req);
+UwResult http_request_get_filename(HttpRequestData* req);
