@@ -252,8 +252,8 @@ void init_http()
         exit(1);
     }
     UwTypeId_HttpRequest = (UwTypeId) type_id;
-    http_request_type.init = init_http_request;
-    http_request_type.fini = fini_http_request;
+    http_request_type._init = init_http_request;
+    http_request_type._fini = fini_http_request;
 
     // create Curl interface
     UwInterfaceId_Curl = uw_register_interface();
@@ -328,6 +328,7 @@ static void check_transfers(CURLM* multi_handle)
             fprintf(stderr, "FATAL: %s\n", curl_easy_strerror(err));
             exit(0);
         }
+        curl_easy_setopt(m->easy_handle, CURLOPT_PRIVATE, nullptr);
 
         HttpRequestData* req = (HttpRequestData*) request->extra_data;
 
