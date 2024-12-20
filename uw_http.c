@@ -242,16 +242,15 @@ void init_http()
     // init CURL
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
-    // create HTTP request type: subclass from UW Class
-    int type_id = uw_subclass(
+    // create HTTP request subtype
+    UwTypeId_HttpRequest = uw_subtype(
         &http_request_type, "HTTPRequest",
-        UwTypeId_Class, sizeof(HttpRequestData)
+        UwTypeId_Struct, sizeof(HttpRequestData)
     );
-    if (type_id == -1) {
-        fprintf(stderr, "Failed subclassing HTTP request\n");
+    if (UwTypeId_HttpRequest == UwTypeId_Null) {
+        fprintf(stderr, "Failed creating HTTP request subtype\n");
         exit(1);
     }
-    UwTypeId_HttpRequest = (UwTypeId) type_id;
     http_request_type._init = init_http_request;
     http_request_type._fini = fini_http_request;
 

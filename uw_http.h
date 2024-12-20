@@ -5,7 +5,7 @@
 
 extern UwTypeId UwTypeId_HttpRequest;
 /*
- * type id for http request, returned by uw_subclass
+ * type id for http request, returned by uw_subtype
  */
 
 extern int UwInterfaceId_Curl;
